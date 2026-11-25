@@ -1,6 +1,0 @@
-aiogram==3.34.0
-aiosqlite==0.22.1
-python-dotenv==1.2.4
-SQLAlchemy[asyncio]==2.1.9
-pytest==9.2.0
-pytest-asyncio==1.5.0
