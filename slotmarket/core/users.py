@@ -8,6 +8,7 @@ import sqlalchemy
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext import asyncio as sa_asyncio
 
+from core import businesses
 from db import models
 
 
@@ -76,3 +77,29 @@ async def mark_owner(db_session: sa_asyncio.AsyncSession, user_id: int) -> None:
         .values(is_owner=True)
     )
     await db_session.commit()
+
+
+async def set_phone(
+    db_session: sa_asyncio.AsyncSession, user_id: int, raw_phone: str
+) -> str:
+    """Сохраняет телефон покупателя в том же виде, что у бизнеса (B3.2).
+
+    Args:
+        db_session: Сессия базы.
+        user_id: ID пользователя.
+        raw_phone: Телефон из контакта Telegram, например 79001234567.
+
+    Returns:
+        Российский телефон в виде +7(XXX)XXX-XX-XX, остальные — +<цифры>.
+
+    Raises:
+        ValueError: Это не номер телефона. Текст ошибки содержит пример.
+    """
+    phone = businesses.parse_phone(raw_phone)
+    await db_session.execute(
+        sqlalchemy.update(models.User)
+        .where(models.User.id == user_id)
+        .values(phone=phone)
+    )
+    await db_session.commit()
+    return phone

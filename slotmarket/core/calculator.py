@@ -7,6 +7,7 @@ import dataclasses
 import decimal
 import enum
 
+import sqlalchemy
 from sqlalchemy.ext import asyncio as sa_asyncio
 
 from core import pricing
@@ -217,6 +218,31 @@ async def save_report(
     )
     await db_session.commit()
     return report
+
+
+async def find_latest_variable_cost(
+    db_session: sa_asyncio.AsyncSession, user_id: int
+) -> int | None:
+    """Находит переменные расходы на час из последнего расчёта.
+
+    Нужны, чтобы предупредить владельца о слишком низкой минимальной
+    цене слота (B4.3).
+
+    Args:
+        db_session: Сессия базы.
+        user_id: ID пользователя.
+
+    Returns:
+        Расходы на час, ₽, или None, если он не проходил калькулятор.
+    """
+    return await db_session.scalar(
+        sqlalchemy.select(models.CalcReport.variable_cost)
+        .where(models.CalcReport.user_id == user_id)
+        .order_by(
+            models.CalcReport.created_at.desc(), models.CalcReport.id.desc()
+        )
+        .limit(1)
+    )
 
 
 def _to_rubles(amount: decimal.Decimal) -> int:

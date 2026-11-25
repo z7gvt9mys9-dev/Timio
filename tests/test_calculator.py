@@ -176,3 +176,25 @@ async def test_save_report_writes_calc_completed_event(
         calculator.EVENT_CALC_COMPLETED, {"report_id": report.id},
     )
 
+
+
+async def test_find_latest_variable_cost_no_reports_returns_none(
+    session_factory: sa_asyncio.async_sessionmaker[sa_asyncio.AsyncSession],
+) -> None:
+    async with session_factory() as db_session:
+        cost = await calculator.find_latest_variable_cost(db_session, 1)
+    assert cost is None
+
+
+async def test_find_latest_variable_cost_returns_last_report(
+    session_factory: sa_asyncio.async_sessionmaker[sa_asyncio.AsyncSession],
+) -> None:
+    user_id = await _save_example(session_factory)
+    newer_input = _example_with(variable_cost=700)
+    async with session_factory() as db_session:
+        await calculator.save_report(
+            db_session, user_id, newer_input,
+            calculator.calculate(newer_input),
+        )
+        cost = await calculator.find_latest_variable_cost(db_session, user_id)
+    assert cost == 700

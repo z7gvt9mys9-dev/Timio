@@ -99,3 +99,37 @@ async def test_mark_owner_sets_is_owner(
     async with session_factory() as db_session:
         found = await users.find_user(db_session, 1)
     assert found.is_owner
+
+
+async def test_set_phone_contact_number_normalized(
+    session_factory: _SessionFactory,
+) -> None:
+    async with session_factory() as db_session:
+        user = await users.register_user(db_session, 1, "Иван")
+        await users.set_phone(db_session, user.id, "79001234567")
+    async with session_factory() as db_session:
+        found = await users.find_user(db_session, 1)
+    assert found.phone == "+7(900)123-45-67"
+
+
+async def test_set_phone_foreign_number_stored_as_plus_digits(
+    session_factory: _SessionFactory,
+) -> None:
+    async with session_factory() as db_session:
+        user = await users.register_user(db_session, 1, "Иван")
+        await users.set_phone(db_session, user.id, "380501234567")
+    async with session_factory() as db_session:
+        found = await users.find_user(db_session, 1)
+    assert found.phone == "+380501234567"
+
+
+async def test_set_phone_not_a_phone_raises_and_keeps_empty(
+    session_factory: _SessionFactory,
+) -> None:
+    async with session_factory() as db_session:
+        user = await users.register_user(db_session, 1, "Иван")
+        with pytest.raises(ValueError, match="Пример"):
+            await users.set_phone(db_session, user.id, "12345")
+    async with session_factory() as db_session:
+        found = await users.find_user(db_session, 1)
+    assert found.phone is None
