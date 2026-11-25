@@ -176,19 +176,3 @@ async def test_save_report_writes_calc_completed_event(
         calculator.EVENT_CALC_COMPLETED, {"report_id": report.id},
     )
 
-
-async def test_find_user_id_unknown_tg_id_returns_none(
-    session_factory: sa_asyncio.async_sessionmaker[sa_asyncio.AsyncSession],
-) -> None:
-    async with session_factory() as db_session:
-        user_id = await calculator.find_user_id(db_session, 999)
-    assert user_id is None
-
-
-async def test_find_user_id_known_tg_id_returns_id(
-    session_factory: sa_asyncio.async_sessionmaker[sa_asyncio.AsyncSession],
-) -> None:
-    saved_user_id = await _save_example(session_factory)
-    async with session_factory() as db_session:
-        user_id = await calculator.find_user_id(db_session, 1)
-    assert user_id == saved_user_id

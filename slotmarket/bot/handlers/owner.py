@@ -1,4 +1,4 @@
-"""Команды владельца: калькулятор потерь (B4.1, B8)."""
+"""Сценарий владельца: диалог калькулятора потерь (B4.1)."""
 
 import aiogram
 from aiogram import filters
@@ -43,27 +43,27 @@ _WEAK_SLOTS_QUESTION = (
     "Какие дни и время у вас самые пустые?\nПример: вт, чт до 14:00\n\n"
     f"Если не знаете, нажмите «{keyboards.SKIP_TEXT}»."
 )
-_NOT_SAVED_TEXT = (
-    "Расчёт пока не сохранён: сначала зарегистрируйтесь через /start."
-)
-# Ответом считается любой текст, кроме команд: /calc и другие команды
-# во время диалога обрабатываются своими обработчиками.
+# Ключ в данных диалога: кому сохранить расчёт в конце.
+_USER_ID_KEY = "user_id"
+# Ответом считается любой текст, кроме команд: /start, /calc и другие
+# команды во время диалога обрабатываются своими обработчиками.
 _ANSWER_FILTER = aiogram.F.text & ~aiogram.F.text.startswith("/")
 
 
-@router.message(filters.Command("calc"))
-async def handle_calc(
-    message: types.Message, state: context.FSMContext
+async def start_calc(
+    message: types.Message, state: context.FSMContext, user_id: int
 ) -> None:
-    """Начинает калькулятор заново с первого вопроса.
+    """Сбрасывает текущий диалог и начинает калькулятор с первого вопроса.
 
     Args:
-        message: Входящее сообщение.
+        message: Сообщение, в чат которого задаётся вопрос.
         state: Состояние диалога.
+        user_id: Пользователь, которому сохранится расчёт.
     """
     await state.clear()
     first_state, first_field = _NUMERIC_STEPS[0]
     await state.set_state(first_state)
+    await state.update_data({_USER_ID_KEY: user_id})
     await message.answer(
         _INTRO_TEXT + _QUESTIONS[first_field],
         reply_markup=types.ReplyKeyboardRemove(),
@@ -113,15 +113,15 @@ async def handle_weak_slots(
     weak_slots = None if is_skipped else message.text.strip()
     answers = await state.get_data()
     await state.clear()
+    user_id = answers.pop(_USER_ID_KEY)
     calc_input = calculator.CalcInput(**answers, weak_slots=weak_slots)
     result = calculator.calculate(calc_input)
-    is_saved = await _save_report(
-        message.from_user.id, calc_input, result, session_factory
+    async with session_factory() as db_session:
+        await calculator.save_report(db_session, user_id, calc_input, result)
+    await message.answer(
+        _format_result(calc_input, result),
+        reply_markup=types.ReplyKeyboardRemove(),
     )
-    text = _format_result(calc_input, result)
-    if not is_saved:
-        text += f"\n\n{_NOT_SAVED_TEXT}"
-    await message.answer(text, reply_markup=types.ReplyKeyboardRemove())
 
 
 def _find_step_index(current_state: str | None) -> int:
@@ -143,20 +143,6 @@ async def _ask_next_question(
     await message.answer(
         _WEAK_SLOTS_QUESTION, reply_markup=keyboards.build_skip_keyboard()
     )
-
-
-async def _save_report(
-    tg_id: int,
-    calc_input: calculator.CalcInput,
-    result: calculator.CalcResult,
-    session_factory: sa_asyncio.async_sessionmaker[sa_asyncio.AsyncSession],
-) -> bool:
-    async with session_factory() as db_session:
-        user_id = await calculator.find_user_id(db_session, tg_id)
-        if user_id is None:
-            return False
-        await calculator.save_report(db_session, user_id, calc_input, result)
-    return True
 
 
 def _format_rubles(amount: int) -> str:

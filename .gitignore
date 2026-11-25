@@ -5,9 +5,7 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
-<<<<<<< HEAD
 
 PLAN.md
 CLAUDE.md
-=======
->>>>>>> 88f4607 (feat: implement core functionality for loss calculator and database models)
+

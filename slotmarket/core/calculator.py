@@ -7,7 +7,6 @@ import dataclasses
 import decimal
 import enum
 
-import sqlalchemy
 from sqlalchemy.ext import asyncio as sa_asyncio
 
 from core import pricing
@@ -180,26 +179,6 @@ def calculate(calc_input: CalcInput) -> CalcResult:
             CALC_DURATION_MIN,
             calc_input.revenue_per_hour,
         ),
-    )
-
-
-async def find_user_id(
-    db_session: sa_asyncio.AsyncSession, tg_id: int
-) -> int | None:
-    """Ищет пользователя по Telegram ID.
-
-    Пользователь создаётся на /start после согласия (шаг 3). До этого
-    расчёт показывается, но не сохраняется.
-
-    Args:
-        db_session: Сессия базы.
-        tg_id: Telegram ID.
-
-    Returns:
-        ID пользователя или None, если его ещё нет.
-    """
-    return await db_session.scalar(
-        sqlalchemy.select(models.User.id).where(models.User.tg_id == tg_id)
     )
 
 
