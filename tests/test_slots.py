@@ -216,7 +216,7 @@ async def test_create_slot_writes_slot_created_event(
     async with session_factory() as db_session:
         event = await db_session.scalar(sqlalchemy.select(models.Event))
     assert (event.type, event.payload) == (
-        slots.EVENT_SLOT_CREATED, {"slot_id": slot.id},
+        models.EventType.SLOT_CREATED, {"slot_id": slot.id},
     )
 
 

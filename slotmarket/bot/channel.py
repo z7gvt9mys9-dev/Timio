@@ -97,6 +97,30 @@ async def refresh_posts(
             await _edit(bot, channel, card)
 
 
+async def remove_posts(
+    bot: aiogram.Bot,
+    channel: ChannelConfig,
+    channel_msg_ids: collections.abc.Sequence[int],
+) -> None:
+    """Удаляет посты из канала, например слоты заблокированного бизнеса.
+
+    Если пост не удалился, он останется в канале, но бронь по нему
+    всё равно не пройдёт (B4.9).
+
+    Args:
+        bot: Бот, который пишет в канал.
+        channel: Канал.
+        channel_msg_ids: ID постов.
+    """
+    for channel_msg_id in channel_msg_ids:
+        try:
+            await bot.delete_message(channel.channel_id, channel_msg_id)
+        except exceptions.TelegramAPIError as error:
+            _LOG.warning(
+                "Пост %s не удалён из канала: %s", channel_msg_id, error
+            )
+
+
 async def build_booking_url(bot: aiogram.Bot, slot_id: int) -> str:
     """Собирает deep link на бронь слота: t.me/<бот>?start=slot_<id> (B8).
 

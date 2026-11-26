@@ -1,4 +1,4 @@
-"""Общие команды: /start, /calc, согласие и главное меню (B2, B5, B8)."""
+"""Общие команды: /start, /calc, /delete_me, согласие и меню (B2, B5, B8)."""
 
 import datetime
 import enum
@@ -14,6 +14,7 @@ from bot.handlers import buyer
 from bot.handlers import owner
 from core import feed
 from core import users
+from db import models
 
 router = aiogram.Router()
 # Подключается последним: ловит нажатия, которые не обработал никто,
@@ -31,8 +32,25 @@ _CONSENT_TEXT = (
     "Перед началом примите согласие на обработку персональных данных.\n\n"
     "Мы храним только ваше имя и Telegram ID, а при первой брони — "
     "телефон. Телефон увидит только бизнес, у которого вы забронировали "
-    "слот."
+    "слот.\n\n"
+    "Удалить свои данные можно командой /delete_me. После удаления "
+    "останется только Telegram ID для учёта блокировок."
 )
+_DELETE_CONFIRM_TEXT = (
+    "Удалить ваши данные? Мы сотрём имя и телефон. Останется только "
+    "Telegram ID для учёта блокировок, история броней сохранится без "
+    "ваших данных."
+)
+_DELETE_DONE_TEXT = (
+    "Данные удалены. Чтобы снова пользоваться ботом, отправьте /start "
+    "и примите согласие."
+)
+_DELETE_UPCOMING_TEXT = (
+    "Сейчас удалить данные нельзя: у вас есть бронь, и бизнесу нужен "
+    "ваш телефон до визита. Отмените бронь в /my или удалите данные "
+    "после визита."
+)
+_NO_DATA_TEXT = "Ваших данных у нас нет."
 _MENU_TEXT = "Выберите, кто вы:"
 _BUYER_TEXT = (
     "Свободные слоты со скидкой публикуются в канале. Цена снижается "
@@ -183,6 +201,61 @@ async def handle_consent(
     )
 
 
+@router.message(filters.Command("delete_me"))
+async def handle_delete_me(
+    message: types.Message,
+    state: context.FSMContext,
+    session_factory: _SessionFactory,
+) -> None:
+    """Просит подтвердить удаление своих данных (B5).
+
+    Args:
+        message: Входящее сообщение.
+        state: Состояние диалога.
+        session_factory: Фабрика сессий базы.
+    """
+    await state.clear()
+    async with session_factory() as db_session:
+        user = await users.find_user(db_session, message.from_user.id)
+    if user is None:
+        await message.answer(_NO_DATA_TEXT)
+        return
+    await message.answer(
+        _DELETE_CONFIRM_TEXT,
+        reply_markup=keyboards.build_delete_me_keyboard(),
+    )
+
+
+@router.callback_query(aiogram.F.data == keyboards.DELETE_ME_CALLBACK)
+async def handle_delete_me_confirm(
+    callback: types.CallbackQuery,
+    state: context.FSMContext,
+    session_factory: _SessionFactory,
+) -> None:
+    """Удаляет имя и телефон после подтверждения (B5).
+
+    Args:
+        callback: Нажатие «Удалить мои данные».
+        state: Состояние диалога.
+        session_factory: Фабрика сессий базы.
+    """
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.clear()
+    async with session_factory() as db_session:
+        user = await users.find_user(db_session, callback.from_user.id)
+        if user is None:
+            await callback.message.answer(_NO_DATA_TEXT)
+            return
+        outcome = await users.delete_personal_data(
+            db_session, user.id, models.utc_now()
+        )
+    if outcome == users.DeleteOutcome.HAS_UPCOMING_BOOKINGS:
+        await callback.message.answer(_DELETE_UPCOMING_TEXT)
+        return
+    await callback.message.answer(_DELETE_DONE_TEXT)
+
+
 @router.callback_query(aiogram.F.data == keyboards.ROLE_OWNER_CALLBACK)
 async def handle_owner_role(
     callback: types.CallbackQuery,
@@ -257,7 +330,7 @@ async def _request_consent(
     state: context.FSMContext,
     next_step: _NextStep,
 ) -> None:
-    # Без согласия записи в users нет: шаг запоминаем, чтобы продолжить
+    # Без согласия (или после /delete_me) шаг запоминаем, чтобы продолжить
     # после нажатия «Принимаю».
     await state.update_data({_NEXT_STEP_KEY: next_step.value})
     await message.answer(

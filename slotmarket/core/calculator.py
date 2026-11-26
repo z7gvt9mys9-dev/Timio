@@ -20,7 +20,6 @@ SALES_SHARE = decimal.Decimal("0.25")
 DISCOUNT_PRICE_SHARE = decimal.Decimal("0.65")
 # В калькуляторе нет услуги, поэтому цена считается за один час (B4.1).
 CALC_DURATION_MIN = 60
-EVENT_CALC_COMPLETED = "calc_completed"
 _PERCENT = 100
 
 
@@ -212,7 +211,7 @@ async def save_report(
     db_session.add(
         models.Event(
             user_id=user_id,
-            type=EVENT_CALC_COMPLETED,
+            type=models.EventType.CALC_COMPLETED,
             payload={"report_id": report.id},
         )
     )

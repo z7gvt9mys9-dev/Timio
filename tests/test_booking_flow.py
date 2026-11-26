@@ -97,6 +97,8 @@ async def _create_slot(
                     _BUSINESS_PHONE,
                 ),
             )
+            # Лента и бронь только для одобренного бизнеса (B4.9).
+            await businesses.approve_business(db_session, business.id)
             await businesses.add_service(
                 db_session, business.id,
                 businesses.ServiceInput("Стрижка", 60, 1500),
@@ -197,7 +199,7 @@ async def test_deep_link_records_slot_opened_event(
     async with session_factory() as db_session:
         event = await db_session.scalar(
             sqlalchemy.select(models.Event).where(
-                models.Event.type == bookings.EVENT_SLOT_OPENED
+                models.Event.type == models.EventType.SLOT_OPENED
             )
         )
     assert event.payload == {"slot_id": slot_id}
@@ -834,3 +836,53 @@ async def test_visit_and_alert_texts_have_no_emoji_or_symbols(
         0x1F000 <= ord(char) <= 0x1FAFF or char in "\u2022\ufe0f"
         for text in texts for char in text
     )
+
+
+async def _block_owner_business(session_factory: _SessionFactory) -> None:
+    async with session_factory() as db_session:
+        owner = await users.find_user(db_session, _OWNER_TG_ID)
+        business = await businesses.find_owner_business(db_session, owner.id)
+        await businesses.block_business(db_session, business.id)
+
+
+async def test_book_permanently_blocked_buyer_sees_no_date(
+    chat: _Chat, session_factory: _SessionFactory
+) -> None:
+    slot_id = await _create_slot(session_factory)
+    await _register(session_factory, _BUYER_TG_ID, "79005554433")
+    async with session_factory() as db_session:
+        await users.block_user(db_session, _BUYER_TG_ID)
+    await chat.send(_press(_BUYER_TG_ID, f"book:{slot_id}"))
+    assert chat.replies() == ["Бронирование недоступно."]
+
+
+async def test_book_blocked_business_slot_says_unavailable(
+    chat: _Chat, session_factory: _SessionFactory
+) -> None:
+    slot_id = await _create_slot(session_factory)
+    await _block_owner_business(session_factory)
+    await _register(session_factory, _BUYER_TG_ID, "79005554433")
+    await chat.send(_press(_BUYER_TG_ID, f"book:{slot_id}"))
+    assert (chat.replies(), await _bookings(session_factory)) == (
+        ["Слот уже недоступен. Другие слоты: /slots"], [],
+    )
+
+
+async def test_deep_link_blocked_business_slot_says_unavailable(
+    chat: _Chat, session_factory: _SessionFactory
+) -> None:
+    slot_id = await _create_slot(session_factory)
+    await _block_owner_business(session_factory)
+    await _register(session_factory, _BUYER_TG_ID)
+    await chat.send(_message(_BUYER_TG_ID, f"/start slot_{slot_id}"))
+    assert chat.replies() == ["Слот уже недоступен. Другие слоты: /slots"]
+
+
+async def test_slots_command_hides_blocked_business_slot(
+    chat: _Chat, session_factory: _SessionFactory
+) -> None:
+    await _create_slot(session_factory, hide_name=False)
+    await _block_owner_business(session_factory)
+    await chat.send(_message(_BUYER_TG_ID, "/slots"))
+    [reply] = chat.replies()
+    assert _BUSINESS_NAME not in reply and "Стрижка" not in reply

@@ -1,6 +1,8 @@
-"""Администрирование: заявки бизнесов (B3.3, B4.7, B4.9)."""
+"""Администрирование: заявки, блокировки (B3.3, B4.7, B4.9)."""
 
 import collections.abc
+import dataclasses
+import enum
 import logging
 
 import aiogram
@@ -9,8 +11,10 @@ from aiogram import filters
 from aiogram import types
 from sqlalchemy.ext import asyncio as sa_asyncio
 
+from bot import channel
 from bot import keyboards
 from core import businesses
+from core import users
 from db import models
 
 _LOG = logging.getLogger(__name__)
@@ -31,6 +35,45 @@ _REJECTED_OWNER_TEXT = (
     "Заявка бизнеса «{name}» отклонена. Если это ошибка, напишите "
     "команде SlotMarket."
 )
+_TARGET_FORMAT_TEXT = (
+    "Формат: /{command} user <Telegram ID> или "
+    "/{command} business <ID бизнеса>.\n"
+    "Пример: /{command} user 123456789 или /{command} business 5"
+)
+_USER_NOT_FOUND_TEXT = "Пользователь с Telegram ID {target_id} не найден."
+_USER_BLOCKED_TEXT = (
+    "Покупатель с Telegram ID {target_id} заблокирован бессрочно."
+)
+_USER_UNBLOCKED_TEXT = (
+    "Блокировка покупателя с Telegram ID {target_id} снята."
+)
+_BUSINESS_BLOCKED_TEXT = (
+    "Бизнес «{name}» (ID {target_id}) заблокирован. Его открытые слоты "
+    "убраны из ленты, существующие брони сохраняются."
+)
+_BUSINESS_NOT_BLOCKABLE_TEXT = (
+    "Бизнес с ID {target_id} не найден или уже заблокирован."
+)
+_BUSINESS_UNBLOCKED_TEXT = (
+    "Бизнес «{name}» (ID {target_id}) разблокирован, его открытые слоты "
+    "вернутся в ленту."
+)
+_BUSINESS_NOT_UNBLOCKABLE_TEXT = (
+    "Бизнес с ID {target_id} не найден или не заблокирован."
+)
+
+
+class _TargetKind(enum.StrEnum):
+    """Кого блокирует админ: первое слово после команды."""
+
+    USER = "user"
+    BUSINESS = "business"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Target:
+    kind: _TargetKind
+    target_id: int
 
 
 def _is_admin(
@@ -63,9 +106,116 @@ async def handle_pending(
         return
     for business in pending:
         await message.answer(
-            format_business_details(business),
+            _format_for_admin(business),
             reply_markup=keyboards.build_application_keyboard(business.id),
         )
+
+
+@router.message(filters.Command("block"))
+async def handle_block(
+    message: types.Message,
+    command: filters.CommandObject,
+    session_factory: _SessionFactory,
+    bot: aiogram.Bot,
+    channel_config: channel.ChannelConfig,
+) -> None:
+    """Блокирует покупателя бессрочно или бизнес (B4.9).
+
+    Args:
+        message: Входящее сообщение.
+        command: Команда с аргументами «user <tg_id>» или
+            «business <id>».
+        session_factory: Фабрика сессий базы.
+        bot: Бот, чтобы убрать посты бизнеса из канала.
+        channel_config: Канал с лентой.
+    """
+    target = _parse_target(command.args)
+    if target is None:
+        await message.answer(_TARGET_FORMAT_TEXT.format(command="block"))
+        return
+    if target.kind == _TargetKind.USER:
+        async with session_factory() as db_session:
+            is_found = await users.block_user(db_session, target.target_id)
+        text = _USER_BLOCKED_TEXT if is_found else _USER_NOT_FOUND_TEXT
+        await message.answer(text.format(target_id=target.target_id))
+        return
+    async with session_factory() as db_session:
+        blocked = await businesses.block_business(
+            db_session, target.target_id
+        )
+    if blocked is None:
+        await message.answer(
+            _BUSINESS_NOT_BLOCKABLE_TEXT.format(target_id=target.target_id)
+        )
+        return
+    await channel.remove_posts(bot, channel_config, blocked.channel_msg_ids)
+    await message.answer(
+        _BUSINESS_BLOCKED_TEXT.format(
+            name=blocked.business.name, target_id=target.target_id
+        )
+    )
+
+
+@router.message(filters.Command("unblock"))
+async def handle_unblock(
+    message: types.Message,
+    command: filters.CommandObject,
+    session_factory: _SessionFactory,
+    bot: aiogram.Bot,
+    channel_config: channel.ChannelConfig,
+) -> None:
+    """Снимает блокировку с покупателя или бизнеса (B4.9).
+
+    Args:
+        message: Входящее сообщение.
+        command: Команда с аргументами «user <tg_id>» или
+            «business <id>».
+        session_factory: Фабрика сессий базы.
+        bot: Бот, чтобы вернуть посты бизнеса в канал.
+        channel_config: Канал с лентой.
+    """
+    target = _parse_target(command.args)
+    if target is None:
+        await message.answer(_TARGET_FORMAT_TEXT.format(command="unblock"))
+        return
+    if target.kind == _TargetKind.USER:
+        async with session_factory() as db_session:
+            is_found = await users.unblock_user(db_session, target.target_id)
+        text = _USER_UNBLOCKED_TEXT if is_found else _USER_NOT_FOUND_TEXT
+        await message.answer(text.format(target_id=target.target_id))
+        return
+    async with session_factory() as db_session:
+        business = await businesses.unblock_business(
+            db_session, target.target_id
+        )
+    if business is None:
+        await message.answer(
+            _BUSINESS_NOT_UNBLOCKABLE_TEXT.format(target_id=target.target_id)
+        )
+        return
+    # Не ждём планировщика: открытые слоты сразу возвращаются в канал.
+    await channel.publish_unposted(bot, session_factory, channel_config)
+    await message.answer(
+        _BUSINESS_UNBLOCKED_TEXT.format(
+            name=business.name, target_id=target.target_id
+        )
+    )
+
+
+def _parse_target(args: str | None) -> _Target | None:
+    parts = (args or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    try:
+        kind = _TargetKind(parts[0].lower())
+    except ValueError:
+        return None
+    return _Target(kind=kind, target_id=int(parts[1]))
+
+
+def _format_for_admin(business: models.Business) -> str:
+    # ID нужен админу для /block business <id>.
+    return f"ID бизнеса: {business.id}\n{format_business_details(business)}"
 
 
 @router.callback_query(
@@ -170,9 +320,10 @@ async def notify_owner_withdrawals(
         "Бизнес снял слот после брони.",
         f"Всего таких снятий: {withdrawals}.",
         "",
-        format_business_details(business),
+        _format_for_admin(business),
         "",
-        "Решите, нужно ли блокировать бизнес.",
+        "Решите, нужно ли блокировать бизнес: /block business "
+        f"{business.id}",
     ])
     for admin_id in admin_ids:
         try:
@@ -219,7 +370,7 @@ async def notify_new_application(
     """
     text = (
         "Новая заявка бизнеса\n\n"
-        f"{format_business_details(business)}\n"
+        f"{_format_for_admin(business)}\n"
         f"Владелец: {owner_name}"
     )
     markup = keyboards.build_application_keyboard(business.id)

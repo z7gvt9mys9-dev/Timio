@@ -181,6 +181,8 @@ async def list_open_cards(
 ) -> list[SlotCard]:
     """Возвращает открытые слоты на сегодня и завтра для /slots (B8).
 
+    Слоты заблокированного бизнеса не показываются (B4.9).
+
     Args:
         db_session: Сессия базы.
         now: Текущее время.
@@ -196,6 +198,7 @@ async def list_open_cards(
     )
     conditions = [
         models.Slot.status == models.SlotStatus.OPEN,
+        models.Business.status == models.BusinessStatus.APPROVED,
         models.Slot.starts_at > now,
         models.Slot.starts_at < window_end,
     ]
@@ -213,11 +216,13 @@ async def list_unposted_cards(
         db_session: Сессия базы.
 
     Returns:
-        Карточки открытых слотов без channel_msg_id.
+        Карточки открытых слотов без channel_msg_id. Слоты бизнеса не
+        в статусе approved не публикуются (B4.9).
     """
     return await _select_cards(
         db_session,
         models.Slot.status == models.SlotStatus.OPEN,
+        models.Business.status == models.BusinessStatus.APPROVED,
         models.Slot.channel_msg_id.is_(None),
     )
 

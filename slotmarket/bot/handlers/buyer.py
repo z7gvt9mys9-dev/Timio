@@ -61,6 +61,7 @@ _OWN_CONTACT_TEXT = (
 _PHONE_SAVED_TEXT = "Телефон сохранён."
 _NO_PHONE_TEXT = "Сначала отправьте телефон: откройте слот ещё раз."
 _BLOCKED_TEXT = "Бронирование недоступно до {date}."
+_PERMANENT_BLOCKED_TEXT = "Бронирование недоступно."
 _BLOCKED_DATE_FORMAT = "%d.%m.%Y"
 _OUTCOME_TEXTS = {
     bookings.BookOutcome.TAKEN: "Слот только что забрали. Другие слоты: /slots",
@@ -70,6 +71,7 @@ _OUTCOME_TEXTS = {
     ),
     bookings.BookOutcome.OWN_SLOT: "Нельзя забронировать слот своего бизнеса.",
     bookings.BookOutcome.NO_PHONE: _NO_PHONE_TEXT,
+    bookings.BookOutcome.UNAVAILABLE: _SLOT_UNAVAILABLE_TEXT,
 }
 
 
@@ -388,12 +390,22 @@ async def _book(
         )
         return
     if result.outcome == bookings.BookOutcome.BLOCKED:
-        blocked_date = result.blocked_until.astimezone(city_tz).strftime(
-            _BLOCKED_DATE_FORMAT
-        )
-        await message.answer(_BLOCKED_TEXT.format(date=blocked_date))
+        await message.answer(_format_blocked(result.blocked_until, city_tz))
         return
     await message.answer(_OUTCOME_TEXTS[result.outcome])
+
+
+def _format_blocked(
+    blocked_until: datetime.datetime, city_tz: datetime.tzinfo
+) -> str:
+    # Бессрочная блокировка админа хранится как 2100 год: дату такой
+    # блокировки покупателю не показываем (B4.9).
+    if bookings.is_permanent_block(blocked_until):
+        return _PERMANENT_BLOCKED_TEXT
+    blocked_date = blocked_until.astimezone(city_tz)
+    return _BLOCKED_TEXT.format(
+        date=blocked_date.strftime(_BLOCKED_DATE_FORMAT)
+    )
 
 
 def _format_buyer_confirmation(

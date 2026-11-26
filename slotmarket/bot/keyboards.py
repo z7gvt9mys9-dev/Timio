@@ -12,6 +12,7 @@ from db import models
 
 SKIP_TEXT = "Пропустить"
 CONSENT_CALLBACK = "consent:accept"
+DELETE_ME_CALLBACK = "deleteme:confirm"
 ROLE_OWNER_CALLBACK = "role:owner"
 ROLE_BUYER_CALLBACK = "role:buyer"
 CATEGORY_PREFIX = "category:"
@@ -80,6 +81,24 @@ def build_consent_keyboard() -> types.InlineKeyboardMarkup:
             [
                 types.InlineKeyboardButton(
                     text="Принимаю", callback_data=CONSENT_CALLBACK
+                )
+            ]
+        ]
+    )
+
+
+def build_delete_me_keyboard() -> types.InlineKeyboardMarkup:
+    """Создаёт кнопку подтверждения удаления данных (B5).
+
+    Returns:
+        Клавиатура с одной кнопкой «Удалить мои данные».
+    """
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(
+                    text="Удалить мои данные",
+                    callback_data=DELETE_ME_CALLBACK,
                 )
             ]
         ]

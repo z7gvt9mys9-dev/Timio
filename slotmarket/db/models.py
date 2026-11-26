@@ -50,6 +50,24 @@ class CalcSource(enum.StrEnum):
     WEB = "web"
 
 
+class EventType(enum.StrEnum):
+    """Тип события в events (B7)."""
+
+    CALC_COMPLETED = "calc_completed"
+    SLOT_CREATED = "slot_created"
+    SLOT_OPENED = "slot_opened"
+    SLOT_BOOKED = "slot_booked"
+    BOOKING_CANCELLED = "booking_cancelled"
+    REMINDER_2H = "reminder_2h"
+    REMINDER_30M = "reminder_30m"
+    VISIT_ASKED = "visit_asked"
+    DATA_DELETED = "data_deleted"
+    USER_BLOCKED = "user_blocked"
+    USER_UNBLOCKED = "user_unblocked"
+    BUSINESS_BLOCKED = "business_blocked"
+    BUSINESS_UNBLOCKED = "business_unblocked"
+
+
 class UtcDateTime(sqlalchemy.types.TypeDecorator):
     """Время в UTC: в базу пишется UTC, из базы читается aware-datetime.
 

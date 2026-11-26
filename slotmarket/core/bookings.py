@@ -19,9 +19,6 @@ from db import models
 
 MAX_ACTIVE_BOOKINGS = 2
 CANCEL_DEADLINE = datetime.timedelta(hours=1)
-EVENT_SLOT_OPENED = "slot_opened"
-EVENT_SLOT_BOOKED = "slot_booked"
-EVENT_BOOKING_CANCELLED = "booking_cancelled"
 REMINDER_2H_LEAD = datetime.timedelta(hours=2)
 REMINDER_30M_LEAD = datetime.timedelta(minutes=30)
 VISIT_QUESTION_DELAY = datetime.timedelta(hours=1)
@@ -29,6 +26,9 @@ VISIT_QUESTION_DELAY = datetime.timedelta(hours=1)
 AUTO_CONFIRM_DELAY = VISIT_QUESTION_DELAY + datetime.timedelta(hours=24)
 NO_SHOW_LIMIT = 2
 BLOCK_PERIOD = datetime.timedelta(days=30)
+# Бессрочная блокировка админом (B4.9). Не 9999 год: при переводе
+# в часовой пояс города такая дата переполняется.
+PERMANENT_BLOCK_UNTIL = datetime.datetime(2100, 1, 1, tzinfo=datetime.UTC)
 OWNER_WITHDRAWALS_ALERT = 3
 
 
@@ -41,14 +41,15 @@ class BookOutcome(enum.StrEnum):
     BLOCKED = "blocked"
     NO_PHONE = "no_phone"
     OWN_SLOT = "own_slot"
+    UNAVAILABLE = "unavailable"
 
 
 class NoticeKind(enum.StrEnum):
     """Напоминание или вопрос по брони. Значение — тип события в events."""
 
-    REMINDER_2H = "reminder_2h"
-    REMINDER_30M = "reminder_30m"
-    VISIT_ASKED = "visit_asked"
+    REMINDER_2H = models.EventType.REMINDER_2H.value
+    REMINDER_30M = models.EventType.REMINDER_30M.value
+    VISIT_ASKED = models.EventType.VISIT_ASKED.value
 
 
 class VisitOutcome(enum.StrEnum):
@@ -162,10 +163,16 @@ async def quote_price(
         now: Текущее время.
 
     Returns:
-        Цена, ₽, или None, если слот не открыт.
+        Цена, ₽, или None, если слот не открыт или бизнес не одобрен.
     """
-    slot = await db_session.get(models.Slot, slot_id)
-    if slot is None or slot.status != models.SlotStatus.OPEN:
+    slot = await db_session.scalar(
+        sqlalchemy.select(models.Slot).where(
+            models.Slot.id == slot_id,
+            models.Slot.status == models.SlotStatus.OPEN,
+            models.Slot.service_id.in_(_approved_service_ids()),
+        )
+    )
+    if slot is None:
         return None
     return pricing.calc_current_price(
         slot.start_price, slot.min_price, slot.starts_at,
@@ -185,7 +192,7 @@ async def record_slot_opened(
     """
     db_session.add(
         models.Event(
-            user_id=user_id, type=EVENT_SLOT_OPENED,
+            user_id=user_id, type=models.EventType.SLOT_OPENED,
             payload={"slot_id": slot_id},
         )
     )
@@ -222,6 +229,9 @@ async def book_slot(
             .where(
                 models.Slot.id == slot_id,
                 models.Slot.status == models.SlotStatus.OPEN,
+                # Если админ заблокировал бизнес после проверки выше,
+                # бронь всё равно не пройдёт (B4.9).
+                models.Slot.service_id.in_(_approved_service_ids()),
             )
             .values(status=models.SlotStatus.BOOKED)
             .returning(
@@ -290,7 +300,7 @@ async def cancel_booking(
     await _reopen_slot(db_session, slot_id, now)
     db_session.add(
         models.Event(
-            user_id=buyer_id, type=EVENT_BOOKING_CANCELLED,
+            user_id=buyer_id, type=models.EventType.BOOKING_CANCELLED,
             payload={"booking_id": booking_id, "by": "buyer"},
         )
     )
@@ -354,7 +364,7 @@ async def withdraw_booked_slot(
     ).scalar_one()
     db_session.add(
         models.Event(
-            user_id=owner_id, type=EVENT_BOOKING_CANCELLED,
+            user_id=owner_id, type=models.EventType.BOOKING_CANCELLED,
             payload={"booking_id": booking_id, "by": "owner"},
         )
     )
@@ -571,6 +581,46 @@ async def count_owner_withdrawals(
     )
 
 
+async def count_upcoming_bookings(
+    db_session: sa_asyncio.AsyncSession,
+    buyer_id: int,
+    now: datetime.datetime,
+) -> int:
+    """Считает активные брони покупателя на слоты, которые не начались.
+
+    Прошедшие брони не считаются: отметка визита приходит позже (B4.5).
+
+    Args:
+        db_session: Сессия базы.
+        buyer_id: ID покупателя.
+        now: Текущее время.
+
+    Returns:
+        Число таких броней.
+    """
+    return await db_session.scalar(
+        sqlalchemy.select(sqlalchemy.func.count(models.Booking.id))
+        .join(models.Slot, models.Slot.id == models.Booking.slot_id)
+        .where(
+            models.Booking.buyer_id == buyer_id,
+            models.Booking.status == models.BookingStatus.ACTIVE,
+            models.Slot.starts_at > now,
+        )
+    )
+
+
+def is_permanent_block(blocked_until: datetime.datetime) -> bool:
+    """Проверяет, что блокировка бессрочная, а не на 30 дней.
+
+    Args:
+        blocked_until: До какого времени заблокирован покупатель.
+
+    Returns:
+        True для блокировки админом: дату показывать не нужно.
+    """
+    return blocked_until >= PERMANENT_BLOCK_UNTIL
+
+
 def should_alert_admins(withdrawals: int) -> bool:
     """Проверяет, пора ли сообщить админам о снятиях после брони (B9).
 
@@ -658,6 +708,18 @@ async def _count_no_show(
     if no_show_count < NO_SHOW_LIMIT:
         return None
     blocked_until = now + BLOCK_PERIOD
+    current_block = await db_session.scalar(
+        sqlalchemy.select(models.User.blocked_until)
+        .where(models.User.id == buyer_id)
+    )
+    if current_block is not None and current_block > blocked_until:
+        # Бессрочную блокировку админа неявка не должна сократить.
+        await db_session.execute(
+            sqlalchemy.update(models.User)
+            .where(models.User.id == buyer_id)
+            .values(no_show_count=0)
+        )
+        return None
     await db_session.execute(
         sqlalchemy.update(models.User)
         .where(models.User.id == buyer_id)
@@ -679,28 +741,28 @@ async def _check_buyer(
         )
     if buyer.phone is None:
         return BookResult(BookOutcome.NO_PHONE)
-    owner_id = await db_session.scalar(
-        sqlalchemy.select(models.Business.owner_id)
-        .join(models.Service, models.Service.business_id == models.Business.id)
-        .join(models.Slot, models.Slot.service_id == models.Service.id)
-        .where(models.Slot.id == slot_id)
-    )
-    if owner_id is None:
+    business_row = (
+        await db_session.execute(
+            sqlalchemy.select(models.Business.owner_id, models.Business.status)
+            .join(
+                models.Service,
+                models.Service.business_id == models.Business.id,
+            )
+            .join(models.Slot, models.Slot.service_id == models.Service.id)
+            .where(models.Slot.id == slot_id)
+        )
+    ).one_or_none()
+    if business_row is None:
         return BookResult(BookOutcome.TAKEN)
+    owner_id, business_status = business_row
+    if business_status != models.BusinessStatus.APPROVED:
+        return BookResult(BookOutcome.UNAVAILABLE)
     if owner_id == buyer_id:
         return BookResult(BookOutcome.OWN_SLOT)
     # Лимит проверяется чтением до брони. Если один покупатель жмёт
     # из двух окон сразу, он может получить третью бронь; для MVP это
     # допустимо, гонку между разными покупателями решает UPDATE.
-    active_count = await db_session.scalar(
-        sqlalchemy.select(sqlalchemy.func.count(models.Booking.id))
-        .join(models.Slot, models.Slot.id == models.Booking.slot_id)
-        .where(
-            models.Booking.buyer_id == buyer_id,
-            models.Booking.status == models.BookingStatus.ACTIVE,
-            models.Slot.starts_at > now,
-        )
-    )
+    active_count = await count_upcoming_bookings(db_session, buyer_id, now)
     if active_count >= MAX_ACTIVE_BOOKINGS:
         return BookResult(BookOutcome.LIMIT_REACHED)
     return None
@@ -727,7 +789,7 @@ async def _insert_booking(
     await db_session.flush()
     db_session.add(
         models.Event(
-            user_id=buyer_id, type=EVENT_SLOT_BOOKED,
+            user_id=buyer_id, type=models.EventType.SLOT_BOOKED,
             payload={"slot_id": slot_id, "booking_id": booking.id},
         )
     )
@@ -805,3 +867,13 @@ async def _select_details(
         .order_by(models.Slot.starts_at, models.Booking.id)
     )
     return [BookingDetails(*row) for row in rows]
+
+
+def _approved_service_ids() -> sqlalchemy.Select[tuple[int]]:
+    return (
+        sqlalchemy.select(models.Service.id)
+        .join(
+            models.Business, models.Business.id == models.Service.business_id
+        )
+        .where(models.Business.status == models.BusinessStatus.APPROVED)
+    )

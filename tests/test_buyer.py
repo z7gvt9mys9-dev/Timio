@@ -131,6 +131,8 @@ async def _create_slot(
                 "+7(900)123-45-67",
             ),
         )
+        # Лента и бронь только для одобренного бизнеса (B4.9).
+        await businesses.approve_business(db_session, business.id)
         service = await businesses.add_service(
             db_session, business.id,
             businesses.ServiceInput("Услуга", 60, 1500),

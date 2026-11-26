@@ -51,6 +51,8 @@ async def service_id(session_factory: _SessionFactory) -> int:
                 "+7(900)123-45-67",
             ),
         )
+        # Лента и бронь только для одобренного бизнеса (B4.9).
+        await businesses.approve_business(db_session, business.id)
         service = await businesses.add_service(
             db_session, business.id,
             businesses.ServiceInput("Стрижка", 60, 1500),

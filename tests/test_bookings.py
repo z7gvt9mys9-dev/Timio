@@ -503,7 +503,7 @@ async def test_record_slot_opened_writes_event(
         await bookings.record_slot_opened(db_session, world.buyer_id, slot_id)
         event = await db_session.scalar(
             sqlalchemy.select(models.Event).where(
-                models.Event.type == bookings.EVENT_SLOT_OPENED
+                models.Event.type == models.EventType.SLOT_OPENED
             )
         )
     assert event.payload == {"slot_id": slot_id}

@@ -108,6 +108,21 @@ class BusinessDecision:
     owner_tg_id: int
 
 
+@dataclasses.dataclass(frozen=True)
+class BlockedBusiness:
+    """Результат блокировки бизнеса админом (B4.9).
+
+    Attributes:
+        business: Бизнес в статусе blocked.
+        channel_msg_ids: Посты открытых слотов, которые нужно удалить
+            из канала. У слотов channel_msg_id уже очищен, поэтому после
+            разблокировки планировщик опубликует их заново.
+    """
+
+    business: models.Business
+    channel_msg_ids: list[int]
+
+
 def parse_text_field(field: TextField, raw_text: str) -> str:
     """Проверяет текстовое поле: не пустое и не длиннее лимита.
 
@@ -328,6 +343,84 @@ async def reject_business(
     )
 
 
+async def block_business(
+    db_session: sa_asyncio.AsyncSession, business_id: int
+) -> BlockedBusiness | None:
+    """Блокирует бизнес и убирает его открытые слоты из ленты (B4.9).
+
+    Статусы слотов не меняются: открытые закроются по времени, брони
+    доживают, а новые брони не пройдут.
+
+    Args:
+        db_session: Сессия базы.
+        business_id: ID бизнеса.
+
+    Returns:
+        Результат или None, если бизнеса нет или он уже заблокирован.
+    """
+    result = await db_session.execute(
+        sqlalchemy.update(models.Business)
+        .where(
+            models.Business.id == business_id,
+            models.Business.status != models.BusinessStatus.BLOCKED,
+        )
+        .values(status=models.BusinessStatus.BLOCKED)
+    )
+    if result.rowcount == 0:
+        await db_session.rollback()
+        return None
+    posted = _posted_open_slots(business_id)
+    channel_msg_ids = list(
+        await db_session.scalars(
+            sqlalchemy.select(models.Slot.channel_msg_id).where(posted)
+        )
+    )
+    await db_session.execute(
+        sqlalchemy.update(models.Slot).where(posted)
+        .values(channel_msg_id=None)
+    )
+    _add_business_event(
+        db_session, models.EventType.BUSINESS_BLOCKED, business_id
+    )
+    await db_session.commit()
+    business = await db_session.get(
+        models.Business, business_id, populate_existing=True
+    )
+    return BlockedBusiness(business=business, channel_msg_ids=channel_msg_ids)
+
+
+async def unblock_business(
+    db_session: sa_asyncio.AsyncSession, business_id: int
+) -> models.Business | None:
+    """Снимает блокировку: бизнес получает статус approved (B4.9).
+
+    Args:
+        db_session: Сессия базы.
+        business_id: ID бизнеса.
+
+    Returns:
+        Бизнес или None, если его нет или он не заблокирован.
+    """
+    result = await db_session.execute(
+        sqlalchemy.update(models.Business)
+        .where(
+            models.Business.id == business_id,
+            models.Business.status == models.BusinessStatus.BLOCKED,
+        )
+        .values(status=models.BusinessStatus.APPROVED)
+    )
+    if result.rowcount == 0:
+        await db_session.rollback()
+        return None
+    _add_business_event(
+        db_session, models.EventType.BUSINESS_UNBLOCKED, business_id
+    )
+    await db_session.commit()
+    return await db_session.get(
+        models.Business, business_id, populate_existing=True
+    )
+
+
 async def add_service(
     db_session: sa_asyncio.AsyncSession,
     business_id: int,
@@ -507,6 +600,28 @@ def _active_slots_exist(
     return sqlalchemy.exists().where(
         models.Slot.service_id == service_id,
         models.Slot.status.in_(_ACTIVE_SLOT_STATUSES),
+    )
+
+
+def _posted_open_slots(business_id: int) -> sqlalchemy.ColumnElement[bool]:
+    return sqlalchemy.and_(
+        models.Slot.service_id.in_(
+            sqlalchemy.select(models.Service.id)
+            .where(models.Service.business_id == business_id)
+        ),
+        models.Slot.status == models.SlotStatus.OPEN,
+        models.Slot.channel_msg_id.is_not(None),
+    )
+
+
+def _add_business_event(
+    db_session: sa_asyncio.AsyncSession,
+    event_type: models.EventType,
+    business_id: int,
+) -> None:
+    # Админ может не быть пользователем бота, поэтому user_id пустой.
+    db_session.add(
+        models.Event(type=event_type, payload={"business_id": business_id})
     )
 
 

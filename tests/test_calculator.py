@@ -173,7 +173,7 @@ async def test_save_report_writes_calc_completed_event(
         )
         event = await db_session.scalar(sqlalchemy.select(models.Event))
     assert (event.type, event.payload) == (
-        calculator.EVENT_CALC_COMPLETED, {"report_id": report.id},
+        models.EventType.CALC_COMPLETED, {"report_id": report.id},
     )
 
 

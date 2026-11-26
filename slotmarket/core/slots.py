@@ -12,7 +12,6 @@ from db import models
 MIN_LEAD = datetime.timedelta(hours=2)
 MAX_LEAD = datetime.timedelta(hours=48)
 EXPIRE_LEAD = datetime.timedelta(minutes=30)
-EVENT_SLOT_CREATED = "slot_created"
 _TIME_FORMAT = "%H:%M"
 _ONE_DAY = datetime.timedelta(days=1)
 _MIDNIGHT = datetime.time(0, 0)
@@ -217,7 +216,7 @@ async def create_slot(
     db_session.add(
         models.Event(
             user_id=owner_id,
-            type=EVENT_SLOT_CREATED,
+            type=models.EventType.SLOT_CREATED,
             payload={"slot_id": slot.id},
         )
     )
