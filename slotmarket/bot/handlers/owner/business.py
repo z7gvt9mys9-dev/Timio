@@ -1,4 +1,6 @@
-"""Регистрация бизнеса и его карточка (B3.1, пункт 3; B4.2)."""
+"""Регистрация бизнеса, его карточка и отчёт (B3.1, B4.2, B4.8)."""
+
+import datetime
 
 import aiogram
 from aiogram import filters
@@ -10,6 +12,8 @@ from bot import states
 from bot.handlers import admin
 from bot.handlers.owner import shared
 from core import businesses
+from core import reports
+from db import models
 
 router = aiogram.Router()
 
@@ -46,6 +50,39 @@ _APPLICATION_SENT_TEXT = (
     "Пока ждёте, добавьте услуги."
 )
 _ALREADY_REGISTERED_TEXT = "У вас уже есть бизнес. Открыть: /business"
+_NO_BUSINESS_REPORT_TEXT = (
+    "Отчёт появится, когда вы зарегистрируете бизнес: /business"
+)
+
+
+@router.message(filters.Command("report"))
+async def handle_report(
+    message: types.Message,
+    state: context.FSMContext,
+    session_factory: shared.SessionFactory,
+    city_tz: datetime.tzinfo,
+) -> None:
+    """Показывает отчёт владельцу за последние 7 дней (B4.8).
+
+    Args:
+        message: Входящее сообщение.
+        state: Состояние диалога.
+        session_factory: Фабрика сессий базы.
+        city_tz: Часовой пояс города.
+    """
+    await state.clear()
+    business = await shared.find_business_by_tg_id(
+        session_factory, message.from_user.id
+    )
+    if business is None:
+        await message.answer(_NO_BUSINESS_REPORT_TEXT)
+        return
+    period = reports.last_days_period(models.utc_now())
+    async with session_factory() as db_session:
+        report = await reports.build_owner_report(
+            db_session, business.id, business.owner_id, period
+        )
+    await message.answer(reports.format_owner_report(report, period, city_tz))
 
 
 async def open_business(

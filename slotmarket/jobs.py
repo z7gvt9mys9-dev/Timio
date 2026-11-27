@@ -1,4 +1,7 @@
-"""Планировщик раз в 5 минут: слоты, цены, посты, напоминания (B6, B9)."""
+"""Планировщик раз в 5 минут: слоты, цены, посты, напоминания, отчёты.
+
+Разделы B4.8, B6, B9.
+"""
 
 import dataclasses
 import datetime
@@ -14,11 +17,13 @@ from bot import channel
 from bot import keyboards
 from core import bookings
 from core import feed
+from core import reports
 from core import slots
 from db import models
 
 JOB_INTERVAL_MINUTES = 5
 SLOT_JOBS_ID = "slot_jobs"
+WEEKLY_REPORTS_ID = "weekly_reports"
 _SLOT_TIME_FORMAT = "%d.%m %H:%M"
 _TIME_FORMAT = "%H:%M"
 _DAY_LABELS = {0: "сегодня", 1: "завтра"}
@@ -129,7 +134,83 @@ def create_scheduler(
         max_instances=1,
         coalesce=True,
     )
+    # Не cron на 10:00: проверка раз в 5 минут отправит отчёт и после
+    # перезапуска бота, а отметка report_sent не даст его повторить.
+    scheduler.add_job(
+        run_weekly_reports,
+        "interval",
+        minutes=JOB_INTERVAL_MINUTES,
+        kwargs={
+            "bot": bot,
+            "session_factory": session_factory,
+            "city_tz": channel_config.city_tz,
+        },
+        id=WEEKLY_REPORTS_ID,
+        next_run_time=datetime.datetime.now(datetime.UTC),
+        max_instances=1,
+        coalesce=True,
+    )
     return scheduler
+
+
+async def run_weekly_reports(
+    bot: aiogram.Bot,
+    session_factory: _SessionFactory,
+    city_tz: datetime.tzinfo,
+) -> None:
+    """Отправляет владельцам недельный отчёт с понедельника 10:00 (B4.8).
+
+    Каждый отчёт уходит один раз: после отправки пишется report_sent
+    с неделей. При сетевой ошибке отчёт повторится в следующий прогон.
+
+    Args:
+        bot: Бот для отправки владельцам.
+        session_factory: Фабрика сессий базы.
+        city_tz: Часовой пояс города.
+    """
+    period = reports.due_weekly_period(models.utc_now(), city_tz)
+    if period is None:
+        return
+    week = reports.week_key(period, city_tz)
+    async with session_factory() as db_session:
+        recipients = await reports.list_weekly_recipients(
+            db_session, period, week
+        )
+    for recipient in recipients:
+        await _send_weekly_report(
+            bot, session_factory, recipient, period, city_tz
+        )
+
+
+async def _send_weekly_report(
+    bot: aiogram.Bot,
+    session_factory: _SessionFactory,
+    recipient: reports.WeeklyRecipient,
+    period: reports.ReportPeriod,
+    city_tz: datetime.tzinfo,
+) -> None:
+    async with session_factory() as db_session:
+        report = await reports.build_owner_report(
+            db_session, recipient.business_id, recipient.owner_id, period
+        )
+    text = reports.format_owner_report(report, period, city_tz)
+    try:
+        await bot.send_message(recipient.owner_tg_id, text)
+    except _PERMANENT_ERRORS as error:
+        _LOG.warning(
+            "Отчёт бизнесу %s не доставлен, больше не шлём: %s",
+            recipient.business_id, error,
+        )
+    except exceptions.TelegramAPIError as error:
+        _LOG.warning(
+            "Отчёт бизнесу %s не отправлен, повторим: %s",
+            recipient.business_id, error,
+        )
+        return
+    async with session_factory() as db_session:
+        await reports.mark_report_sent(
+            db_session, recipient, reports.week_key(period, city_tz)
+        )
 
 
 async def _notify_owner(

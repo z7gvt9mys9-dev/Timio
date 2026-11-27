@@ -66,6 +66,7 @@ class EventType(enum.StrEnum):
     USER_UNBLOCKED = "user_unblocked"
     BUSINESS_BLOCKED = "business_blocked"
     BUSINESS_UNBLOCKED = "business_unblocked"
+    REPORT_SENT = "report_sent"
 
 
 class UtcDateTime(sqlalchemy.types.TypeDecorator):
