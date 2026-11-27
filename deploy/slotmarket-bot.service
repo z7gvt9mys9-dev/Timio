@@ -1,0 +1,29 @@
+# Telegram-бот SlotMarket с автоперезапуском (B5).
+# Установка: sudo cp deploy/slotmarket-bot.service /etc/systemd/system/
+#   && sudo systemctl daemon-reload
+#   && sudo systemctl enable --now slotmarket-bot
+# Логи: journalctl -u slotmarket-bot
+
+[Unit]
+Description=SlotMarket Telegram bot
+Wants=network-online.target
+After=network-online.target
+# Не больше 5 запусков за 5 минут: при ошибке на старте бот не долбит
+# Telegram запросами. После лимита: sudo systemctl reset-failed
+# slotmarket-bot && sudo systemctl start slotmarket-bot.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=slotmarket
+Group=slotmarket
+WorkingDirectory=/opt/slotmarket
+# Токен и ID админов бот сам читает из /opt/slotmarket/.env.
+ExecStart=/opt/slotmarket/.venv/bin/python slotmarket/main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

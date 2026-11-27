@@ -1,0 +1,5 @@
+# Копия базы каждый день в 03:30 по времени сервера.
+# Установка от пользователя slotmarket: sudo -u slotmarket crontab -e
+# Папка лога: sudo mkdir -p /var/log/slotmarket
+#   && sudo chown slotmarket: /var/log/slotmarket
+30 3 * * * /opt/slotmarket/deploy/backup_db.sh >> /var/log/slotmarket/backup.log 2>&1
