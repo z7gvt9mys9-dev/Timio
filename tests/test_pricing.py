@@ -14,34 +14,40 @@ _MIN_PRICE = 750
 
 
 def test_recommend_min_price_b41_example_returns_700() -> None:
-    recommendation = pricing.recommend_min_price(600, 60, 1500)
+    recommendation = pricing.recommend_min_price(600, 60, 1500, 1250)
     assert recommendation.price == 700
 
 
 def test_recommend_min_price_b41_example_has_no_warning() -> None:
-    recommendation = pricing.recommend_min_price(600, 60, 1500)
+    recommendation = pricing.recommend_min_price(600, 60, 1500, 1250)
     assert not recommendation.is_below_floor
 
 
 def test_recommend_min_price_low_costs_clamped_to_30_percent() -> None:
-    recommendation = pricing.recommend_min_price(100, 60, 1500)
+    recommendation = pricing.recommend_min_price(100, 60, 1500, 1250)
     assert recommendation.price == 450
 
 
 def test_recommend_min_price_high_costs_clamped_to_start_price() -> None:
-    recommendation = pricing.recommend_min_price(1400, 60, 1500)
+    recommendation = pricing.recommend_min_price(1400, 60, 1500, 1250)
     assert recommendation.price == 1250
 
 
 def test_recommend_min_price_high_costs_sets_warning() -> None:
-    recommendation = pricing.recommend_min_price(1400, 60, 1500)
+    recommendation = pricing.recommend_min_price(1400, 60, 1500, 1250)
     assert recommendation.is_below_floor
 
 
 def test_recommend_min_price_duration_scales_costs() -> None:
     # 600 ₽/ч × 90 мин = 900, плюс 10% = 990, вверх до 50 = 1000.
-    recommendation = pricing.recommend_min_price(600, 90, 2000)
+    recommendation = pricing.recommend_min_price(600, 90, 2000, 1700)
     assert recommendation.price == 1000
+
+
+def test_recommend_min_price_clamped_to_owner_start_price() -> None:
+    # 1400 + 10% = 1540 → 1550, но стартовая цена владельца 1500.
+    recommendation = pricing.recommend_min_price(1400, 60, 1500, 1500)
+    assert recommendation.price == 1500
 
 
 def _price_after(
@@ -120,13 +126,32 @@ def test_calc_current_price_never_above_start() -> None:
 
 
 def test_calc_min_price_range_upper_is_start_price() -> None:
-    # 90% от 1500 = 1350, но стартовая цена 1250.
-    assert pricing.calc_min_price_range(1500) == pricing.PriceRange(450, 1250)
+    range_ = pricing.calc_min_price_range(1500, 1250)
+    assert range_ == pricing.PriceRange(450, 1250)
+
+
+def test_calc_min_price_range_owner_start_above_old_90_percent() -> None:
+    range_ = pricing.calc_min_price_range(1500, 1500)
+    assert range_ == pricing.PriceRange(450, 1500)
 
 
 def test_calc_min_price_range_rounds_lower_up() -> None:
     # 30% от 1499 = 449,7 → 450.
-    assert pricing.calc_min_price_range(1499).lower == 450
+    assert pricing.calc_min_price_range(1499, 1250).lower == 450
+
+
+def test_calc_start_price_range_from_30_percent_to_regular() -> None:
+    range_ = pricing.calc_start_price_range(1500)
+    assert range_ == pricing.PriceRange(450, 1500)
+
+
+def test_calc_current_price_falls_from_owner_start_price() -> None:
+    # Середина пути от 1450 до 750: 1100.
+    price = pricing.calc_current_price(
+        1450, 750, _STARTS_AT, _PUBLISHED_AT,
+        _PUBLISHED_AT + datetime.timedelta(hours=12),
+    )
+    assert price == 1100
 
 
 def test_is_below_variable_cost_below_returns_true() -> None:

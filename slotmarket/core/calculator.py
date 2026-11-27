@@ -178,6 +178,7 @@ def calculate(calc_input: CalcInput) -> CalcResult:
             calc_input.variable_cost,
             CALC_DURATION_MIN,
             calc_input.revenue_per_hour,
+            pricing.calc_start_price(calc_input.revenue_per_hour),
         ),
     )
 

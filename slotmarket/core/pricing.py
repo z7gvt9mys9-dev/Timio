@@ -7,14 +7,13 @@ import decimal
 # Минимальная прибыль сверх переменных расходов, чтобы продажа не была
 # «в ноль».
 MIN_PROFIT_SHARE = decimal.Decimal("0.10")
-# Границы минимальной цены относительно обычной (B4.3).
+# Нижняя граница стартовой и минимальной цены от обычной (B4.3).
 MIN_PRICE_LOWER_SHARE = decimal.Decimal("0.30")
-MIN_PRICE_UPPER_SHARE = decimal.Decimal("0.90")
 # Ставка комиссии только для справочного расчёта в отчёте (B4.8).
 # В пол минимальной цены не входит, пока комиссия не взимается.
 COMMISSION_SHARE = decimal.Decimal("0.15")
 PRICE_STEP = 50
-# Снижение цены (B4.4).
+# Скидка стартовой цены по умолчанию (B4.4).
 START_DISCOUNT_SHARE = decimal.Decimal("0.15")
 FINAL_PRICE_PERIOD = datetime.timedelta(hours=2)
 LATE_PUBLICATION_PERIOD = datetime.timedelta(hours=2, minutes=30)
@@ -37,7 +36,10 @@ class MinPriceRecommendation:
 
 
 def recommend_min_price(
-    variable_cost_per_hour: int, duration_min: int, regular_price: int
+    variable_cost_per_hour: int,
+    duration_min: int,
+    regular_price: int,
+    start_price: int,
 ) -> MinPriceRecommendation:
     """Считает рекомендуемую минимальную цену слота по формуле B4.3.
 
@@ -45,6 +47,7 @@ def recommend_min_price(
         variable_cost_per_hour: Переменные расходы на час, ₽.
         duration_min: Длительность услуги, минуты.
         regular_price: Обычная цена услуги, ₽.
+        start_price: Стартовая цена слота, ₽: верхняя граница.
 
     Returns:
         Рекомендуемая цена и флаг предупреждения.
@@ -52,7 +55,7 @@ def recommend_min_price(
     variable_cost = calc_variable_cost(variable_cost_per_hour, duration_min)
     floor_price = variable_cost * (1 + MIN_PROFIT_SHARE)
     rounded_price = _round_up_to_step(floor_price)
-    price_range = calc_min_price_range(regular_price)
+    price_range = calc_min_price_range(regular_price, start_price)
     price = min(max(rounded_price, price_range.lower), price_range.upper)
     return MinPriceRecommendation(
         price=price, is_below_floor=price < floor_price
@@ -61,16 +64,16 @@ def recommend_min_price(
 
 @dataclasses.dataclass(frozen=True)
 class PriceRange:
-    """Допустимый диапазон минимальной цены слота, ₽, включительно."""
+    """Допустимый диапазон цены слота, ₽, включительно."""
 
     lower: int
     upper: int
 
 
-def calc_min_price_range(regular_price: int) -> PriceRange:
-    """Считает, какой может быть минимальная цена слота (B4.3).
+def calc_start_price_range(regular_price: int) -> PriceRange:
+    """Считает, какой может быть стартовая цена слота (B4.3).
 
-    Не меньше 30% обычной, не больше 90% обычной и не выше стартовой.
+    Не меньше 30% обычной и не выше обычной.
 
     Args:
         regular_price: Обычная цена услуги, ₽.
@@ -78,14 +81,32 @@ def calc_min_price_range(regular_price: int) -> PriceRange:
     Returns:
         Диапазон в целых рублях.
     """
-    lower = _to_rubles(
+    return PriceRange(
+        lower=_calc_lowest_price(regular_price), upper=regular_price
+    )
+
+
+def calc_min_price_range(regular_price: int, start_price: int) -> PriceRange:
+    """Считает, какой может быть минимальная цена слота (B4.3).
+
+    Не меньше 30% обычной и не выше стартовой.
+
+    Args:
+        regular_price: Обычная цена услуги, ₽.
+        start_price: Стартовая цена слота, ₽.
+
+    Returns:
+        Диапазон в целых рублях.
+    """
+    return PriceRange(
+        lower=_calc_lowest_price(regular_price), upper=start_price
+    )
+
+
+def _calc_lowest_price(regular_price: int) -> int:
+    return _to_rubles(
         regular_price * MIN_PRICE_LOWER_SHARE, decimal.ROUND_CEILING
     )
-    upper = min(
-        _to_rubles(regular_price * MIN_PRICE_UPPER_SHARE, decimal.ROUND_FLOOR),
-        calc_start_price(regular_price),
-    )
-    return PriceRange(lower=lower, upper=upper)
 
 
 def calc_variable_cost(
@@ -135,9 +156,10 @@ def _to_rubles(amount: decimal.Decimal, rounding: str) -> int:
 
 
 def calc_start_price(regular_price: int) -> int:
-    """Считает стартовую цену слота: обычная минус 15% (B4.4).
+    """Считает стартовую цену по умолчанию: обычная минус 15% (B4.4).
 
-    Округляется вниз до 50 ₽, чтобы скидка была не меньше 15%.
+    Округляется вниз до 50 ₽, чтобы скидка была не меньше 15%. Бот
+    подсказывает её владельцу, калькулятор считает по ней.
 
     Args:
         regular_price: Обычная цена услуги, ₽.

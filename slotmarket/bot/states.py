@@ -45,6 +45,7 @@ class NewSlotStates(state.StatesGroup):
     service = state.State()
     day = state.State()
     time = state.State()
+    start_price = state.State()
     min_price = state.State()
     hide_name = state.State()
     confirm = state.State()

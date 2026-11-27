@@ -45,6 +45,7 @@ class SlotCard:
     starts_at: datetime.datetime
     current_price: int
     regular_price: int
+    start_price: int
     hide_name: bool
     channel_msg_id: int | None
     service_title: str
@@ -260,6 +261,7 @@ async def _select_cards(
             models.Slot.starts_at,
             models.Slot.current_price,
             models.Service.regular_price,
+            models.Slot.start_price,
             models.Slot.hide_name,
             models.Slot.channel_msg_id,
             models.Service.title,
@@ -284,7 +286,9 @@ def _format_place(card: SlotCard) -> str:
 
 
 def _format_price(card: SlotCard) -> str:
-    return (
-        f"Цена сейчас: {format_rubles(card.current_price)} "
-        f"(обычно <s>{format_rubles(card.regular_price)}</s>)"
-    )
+    current = f"Цена сейчас: {format_rubles(card.current_price)}"
+    # Старт без скидки: зачёркнутая цена обещала бы скидку, которой
+    # пока нет (B4.6).
+    if card.start_price >= card.regular_price:
+        return current
+    return f"{current} (обычно <s>{format_rubles(card.regular_price)}</s>)"

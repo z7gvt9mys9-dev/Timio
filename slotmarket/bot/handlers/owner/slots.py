@@ -29,6 +29,7 @@ _LOG = logging.getLogger(__name__)
 # Ключи в данных диалога создания слота.
 _DAY_OFFSET_KEY = "day_offset"
 _STARTS_AT_KEY = "starts_at"
+_START_PRICE_KEY = "start_price"
 _MIN_PRICE_KEY = "min_price"
 _HIDE_NAME_KEY = "hide_name"
 _NOT_APPROVED_TEXT = "Слоты можно выставлять после одобрения заявки."
@@ -164,7 +165,7 @@ async def handle_new_slot_time(
     session_factory: shared.SessionFactory,
     city_tz: datetime.tzinfo,
 ) -> None:
-    """Проверяет время начала и спрашивает минимальную цену.
+    """Проверяет время начала и спрашивает стартовую цену.
 
     Args:
         message: Время в виде ЧЧ:ММ.
@@ -184,12 +185,52 @@ async def handle_new_slot_time(
         await message.answer(f"{error}\n\n{_TIME_QUESTION}")
         return
     await state.update_data({_STARTS_AT_KEY: starts_at.isoformat()})
+    await state.set_state(states.NewSlotStates.start_price)
+    async with session_factory() as db_session:
+        service = await businesses.find_owner_service(
+            db_session, answers[shared.USER_ID_KEY],
+            answers[shared.SERVICE_ID_KEY],
+        )
+    await message.answer(_start_price_question(service.regular_price))
+
+
+@router.message(
+    filters.StateFilter(states.NewSlotStates.start_price),
+    shared.ANSWER_FILTER,
+)
+async def handle_new_slot_start_price(
+    message: types.Message,
+    state: context.FSMContext,
+    session_factory: shared.SessionFactory,
+) -> None:
+    """Проверяет стартовую цену и спрашивает минимальную (B4.3).
+
+    Args:
+        message: Стартовая цена, ₽.
+        state: Состояние диалога.
+        session_factory: Фабрика сессий базы.
+    """
+    answers = await state.get_data()
+    async with session_factory() as db_session:
+        service = await businesses.find_owner_service(
+            db_session, answers[shared.USER_ID_KEY],
+            answers[shared.SERVICE_ID_KEY],
+        )
+    try:
+        start_price = slots.parse_start_price(
+            message.text, service.regular_price
+        )
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+    await state.update_data({_START_PRICE_KEY: start_price})
     await state.set_state(states.NewSlotStates.min_price)
     await message.answer(
         await _min_price_question(
             session_factory,
             answers[shared.USER_ID_KEY],
             answers[shared.SERVICE_ID_KEY],
+            start_price,
         )
     )
 
@@ -219,7 +260,9 @@ async def handle_new_slot_min_price(
             db_session, user_id
         )
     try:
-        min_price = slots.parse_min_price(message.text, service.regular_price)
+        min_price = slots.parse_min_price(
+            message.text, service.regular_price, answers[_START_PRICE_KEY]
+        )
     except ValueError as error:
         await message.answer(str(error))
         return
@@ -611,8 +654,23 @@ async def _notify_buyer_withdrawn(
         )
 
 
+def _start_price_question(regular_price: int) -> str:
+    price_range = pricing.calc_start_price_range(regular_price)
+    default_price = pricing.calc_start_price(regular_price)
+    return "\n".join([
+        "Какая стартовая цена, ₽? С неё цена начнёт снижаться.",
+        f"Допустимо: от {price_range.lower} до {price_range.upper} "
+        "(обычная цена).",
+        f"Рекомендуем: {default_price} (обычная минус 15%).",
+        f"Пример: {default_price}",
+    ])
+
+
 async def _min_price_question(
-    session_factory: shared.SessionFactory, user_id: int, service_id: int
+    session_factory: shared.SessionFactory,
+    user_id: int,
+    service_id: int,
+    start_price: int,
 ) -> str:
     async with session_factory() as db_session:
         service = await businesses.find_owner_service(
@@ -621,7 +679,9 @@ async def _min_price_question(
         variable_cost = await calculator.find_latest_variable_cost(
             db_session, user_id
         )
-    price_range = pricing.calc_min_price_range(service.regular_price)
+    price_range = pricing.calc_min_price_range(
+        service.regular_price, start_price
+    )
     lines = [
         "Какая минимальная цена, ₽? Цена будет снижаться от "
         f"{feed.format_rubles(price_range.upper)} до неё.",
@@ -629,7 +689,8 @@ async def _min_price_question(
     ]
     if variable_cost is not None:
         recommendation = pricing.recommend_min_price(
-            variable_cost, service.duration_min, service.regular_price
+            variable_cost, service.duration_min, service.regular_price,
+            start_price,
         )
         lines.append(
             f"Рекомендуем: {recommendation.price} (расходы из калькулятора "
@@ -643,6 +704,7 @@ def _slot_input(answers: dict[str, object]) -> slots.SlotInput:
     return slots.SlotInput(
         service_id=answers[shared.SERVICE_ID_KEY],
         starts_at=datetime.datetime.fromisoformat(answers[_STARTS_AT_KEY]),
+        start_price=answers[_START_PRICE_KEY],
         min_price=answers[_MIN_PRICE_KEY],
         hide_name=answers[_HIDE_NAME_KEY],
     )
@@ -653,17 +715,14 @@ def _format_slot_summary(
     service: models.Service,
     city_tz: datetime.tzinfo,
 ) -> str:
-    start_price = pricing.calc_start_price(service.regular_price)
-    now = models.utc_now()
-    current_price = pricing.calc_current_price(
-        start_price, slot_input.min_price, slot_input.starts_at, now, now
-    )
+    current_price = slots.calc_input_price(slot_input, models.utc_now())
     hide_label = "да" if slot_input.hide_name else "нет"
     return "\n".join([
         "Проверьте слот:",
         f"Услуга: {service.title}",
         f"Начало: {shared.format_local(slot_input.starts_at, city_tz)}",
         f"Обычная цена: {feed.format_rubles(service.regular_price)}",
+        f"Стартовая цена: {feed.format_rubles(slot_input.start_price)}",
         f"Цена сейчас: {feed.format_rubles(current_price)}",
         f"Снизится до: {feed.format_rubles(slot_input.min_price)}",
         f"Скрыть название: {hide_label}",

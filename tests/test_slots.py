@@ -75,10 +75,11 @@ def _input(
     owner: _Owner,
     lead: datetime.timedelta = datetime.timedelta(hours=26),
     min_price: int = _MIN_PRICE,
+    start_price: int = 1250,
 ) -> slots.SlotInput:
     return slots.SlotInput(
         service_id=owner.service_id, starts_at=_NOW + lead,
-        min_price=min_price, hide_name=False,
+        start_price=start_price, min_price=min_price, hide_name=False,
     )
 
 
@@ -161,13 +162,32 @@ def test_build_starts_at_bad_format_raises(raw_time: str) -> None:
 
 
 def test_parse_min_price_inside_range_returns_int() -> None:
-    assert slots.parse_min_price(" 800 ", 1500) == 800
+    assert slots.parse_min_price(" 800 ", 1500, 1250) == 800
 
 
 @pytest.mark.parametrize("raw_price", ["449", "1251", "дёшево"])
 def test_parse_min_price_outside_range_raises(raw_price: str) -> None:
     with pytest.raises(ValueError, match="от 450 до 1250"):
-        slots.parse_min_price(raw_price, 1500)
+        slots.parse_min_price(raw_price, 1500, 1250)
+
+
+def test_parse_min_price_up_to_owner_start_price_accepted() -> None:
+    assert slots.parse_min_price("1400", 1500, 1500) == 1400
+
+
+def test_parse_start_price_up_to_regular_returns_int() -> None:
+    assert slots.parse_start_price(" 1500 ", 1500) == 1500
+
+
+@pytest.mark.parametrize("raw_price", ["449", "1501", "дорого"])
+def test_parse_start_price_outside_range_raises(raw_price: str) -> None:
+    with pytest.raises(ValueError, match="от 450 до 1500"):
+        slots.parse_start_price(raw_price, 1500)
+
+
+def test_parse_start_price_error_suggests_default_start() -> None:
+    with pytest.raises(ValueError, match="Пример: 1250"):
+        slots.parse_start_price("1501", 1500)
 
 
 async def test_create_slot_valid_input_is_open(
@@ -184,6 +204,31 @@ async def test_create_slot_prices_from_regular_price(
     assert (slot.start_price, slot.min_price, slot.current_price) == (
         1250, _MIN_PRICE, 1250,
     )
+
+
+async def test_create_slot_stores_owner_start_price(
+    session_factory: _SessionFactory, owner: _Owner
+) -> None:
+    slot_input = _input(owner, start_price=1500)
+    slot = await _create(session_factory, owner, slot_input)
+    assert (slot.start_price, slot.current_price) == (1500, 1500)
+
+
+@pytest.mark.parametrize("start_price", [449, 1501])
+async def test_create_slot_start_price_outside_range_rejected(
+    session_factory: _SessionFactory, owner: _Owner, start_price: int
+) -> None:
+    slot_input = _input(owner, min_price=449, start_price=start_price)
+    with pytest.raises(slots.SlotRejectedError, match="от 450 до 1500"):
+        await _create(session_factory, owner, slot_input)
+
+
+async def test_create_slot_min_price_above_start_rejected(
+    session_factory: _SessionFactory, owner: _Owner
+) -> None:
+    slot_input = _input(owner, min_price=1100, start_price=1000)
+    with pytest.raises(slots.SlotRejectedError, match="от 450 до 1000"):
+        await _create(session_factory, owner, slot_input)
 
 
 async def test_create_slot_late_publication_starts_at_min(
@@ -468,6 +513,47 @@ async def test_repeat_yesterday_skips_outside_window(
     await _insert(session_factory, owner, _yesterday_at(13), _Status.EXPIRED)
     result = await _repeat(session_factory, owner)
     assert result == slots.RepeatResult(created_ids=(), skipped=1)
+
+
+async def test_repeat_yesterday_copies_start_price(
+    session_factory: _SessionFactory, owner: _Owner
+) -> None:
+    slot_id = await _insert(
+        session_factory, owner, _yesterday_at(18), _Status.DONE
+    )
+    await _update_slot(session_factory, slot_id, start_price=1400)
+    await _repeat(session_factory, owner)
+    async with session_factory() as db_session:
+        listed = await slots.list_owner_slots(db_session, owner.user_id, _NOW)
+    assert [item.slot.start_price for item in listed] == [1400]
+
+
+async def test_repeat_yesterday_skips_start_above_new_regular_price(
+    session_factory: _SessionFactory, owner: _Owner
+) -> None:
+    # Вчера стартовая 1250, сегодня обычная цена услуги снижена до 1000.
+    await _insert(session_factory, owner, _yesterday_at(18), _Status.DONE)
+    async with session_factory() as db_session:
+        await db_session.execute(
+            sqlalchemy.update(models.Service)
+            .where(models.Service.id == owner.service_id)
+            .values(regular_price=1000)
+        )
+        await db_session.commit()
+    result = await _repeat(session_factory, owner)
+    assert result == slots.RepeatResult(created_ids=(), skipped=1)
+
+
+async def _update_slot(
+    session_factory: _SessionFactory, slot_id: int, **values: int
+) -> None:
+    async with session_factory() as db_session:
+        await db_session.execute(
+            sqlalchemy.update(models.Slot)
+            .where(models.Slot.id == slot_id)
+            .values(**values)
+        )
+        await db_session.commit()
 
 
 async def test_repeat_yesterday_ignores_withdrawn(

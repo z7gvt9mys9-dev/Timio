@@ -49,6 +49,7 @@ class SlotInput:
 
     service_id: int
     starts_at: datetime.datetime
+    start_price: int
     min_price: int
     hide_name: bool
 
@@ -139,12 +140,36 @@ def validate_starts_at(
         raise SlotRejectedError(_LEAD_ERROR)
 
 
-def parse_min_price(raw_text: str, regular_price: int) -> int:
+def parse_start_price(raw_text: str, regular_price: int) -> int:
+    """Проверяет стартовую цену по диапазону B4.3.
+
+    Args:
+        raw_text: Текст ответа.
+        regular_price: Обычная цена услуги, ₽.
+
+    Returns:
+        Стартовая цена, ₽.
+
+    Raises:
+        ValueError: Не число или вне диапазона. Текст содержит диапазон
+            и пример.
+    """
+    return _parse_price(
+        raw_text, "Стартовая цена",
+        pricing.calc_start_price_range(regular_price),
+        pricing.calc_start_price(regular_price),
+    )
+
+
+def parse_min_price(
+    raw_text: str, regular_price: int, start_price: int
+) -> int:
     """Проверяет минимальную цену по диапазону B4.3.
 
     Args:
         raw_text: Текст ответа.
         regular_price: Обычная цена услуги, ₽.
+        start_price: Стартовая цена слота, ₽.
 
     Returns:
         Минимальная цена, ₽.
@@ -153,10 +178,21 @@ def parse_min_price(raw_text: str, regular_price: int) -> int:
         ValueError: Не число или вне диапазона. Текст содержит диапазон
             и пример.
     """
-    price_range = pricing.calc_min_price_range(regular_price)
+    price_range = pricing.calc_min_price_range(regular_price, start_price)
+    return _parse_price(
+        raw_text, "Минимальная цена", price_range, price_range.upper
+    )
+
+
+def _parse_price(
+    raw_text: str,
+    label: str,
+    price_range: pricing.PriceRange,
+    example: int,
+) -> int:
     error_text = (
-        f"Минимальная цена — целое число рублей от {price_range.lower} "
-        f"до {price_range.upper}. Пример: {price_range.upper}"
+        f"{label} — целое число рублей от {price_range.lower} "
+        f"до {price_range.upper}. Пример: {example}"
     )
     try:
         value = int(raw_text.strip())
@@ -192,21 +228,24 @@ async def create_slot(
         db_session, owner_id, slot_input.service_id
     )
     validate_starts_at(slot_input.starts_at, now)
-    price_range = pricing.calc_min_price_range(service.regular_price)
-    if not price_range.lower <= slot_input.min_price <= price_range.upper:
-        raise SlotRejectedError(
-            f"Минимальная цена должна быть от {price_range.lower} "
-            f"до {price_range.upper} ₽."
-        )
-    start_price = pricing.calc_start_price(service.regular_price)
+    # Проверяем по текущей обычной цене: копия вчерашнего слота после
+    # смены цены услуги может выйти из диапазона (B4.3).
+    _check_price_in_range(
+        "Стартовая цена", slot_input.start_price,
+        pricing.calc_start_price_range(service.regular_price),
+    )
+    _check_price_in_range(
+        "Минимальная цена", slot_input.min_price,
+        pricing.calc_min_price_range(
+            service.regular_price, slot_input.start_price
+        ),
+    )
     slot = models.Slot(
         service_id=service.id,
         starts_at=slot_input.starts_at,
-        start_price=start_price,
+        start_price=slot_input.start_price,
         min_price=slot_input.min_price,
-        current_price=pricing.calc_current_price(
-            start_price, slot_input.min_price, slot_input.starts_at, now, now
-        ),
+        current_price=calc_input_price(slot_input, now),
         hide_name=slot_input.hide_name,
         status=models.SlotStatus.OPEN,
         published_at=now,
@@ -222,6 +261,32 @@ async def create_slot(
     )
     await db_session.commit()
     return slot
+
+
+def calc_input_price(slot_input: SlotInput, now: datetime.datetime) -> int:
+    """Считает цену нового слота в момент публикации (B4.4).
+
+    Args:
+        slot_input: Данные слота.
+        now: Время публикации.
+
+    Returns:
+        Цена сейчас, ₽.
+    """
+    return pricing.calc_current_price(
+        slot_input.start_price, slot_input.min_price, slot_input.starts_at,
+        now, now,
+    )
+
+
+def _check_price_in_range(
+    label: str, price: int, price_range: pricing.PriceRange
+) -> None:
+    if not price_range.lower <= price <= price_range.upper:
+        raise SlotRejectedError(
+            f"{label} должна быть от {price_range.lower} "
+            f"до {price_range.upper} ₽."
+        )
 
 
 async def withdraw_slot(
@@ -424,6 +489,7 @@ async def _yesterday_copies(
                 today, slot.starts_at.astimezone(city_tz).time(),
                 tzinfo=city_tz,
             ),
+            start_price=slot.start_price,
             min_price=slot.min_price,
             hide_name=slot.hide_name,
         )

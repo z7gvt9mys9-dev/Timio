@@ -34,7 +34,8 @@ _SYMBOLS = re.compile(
 _CARD = feed.SlotCard(
     slot_id=12, status=models.SlotStatus.OPEN,
     starts_at=datetime.datetime(2026, 12, 1, 15, 0, tzinfo=datetime.UTC),
-    current_price=1250, regular_price=1500, hide_name=False,
+    current_price=1250, regular_price=1500, start_price=1250,
+    hide_name=False,
     channel_msg_id=None, service_title="Мужская стрижка",
     category="барбершоп", business_name="Барбершоп «Борода»",
     district="Хамовники",
@@ -51,6 +52,11 @@ def _text(
         cards, len(cards) if total is None else total, category, _NOW,
         _CITY_TZ,
     )
+
+
+def test_build_slots_text_start_equal_regular_has_no_struck_price() -> None:
+    card = dataclasses.replace(_CARD, start_price=1500)
+    assert "обычно" not in _text([card])
 
 
 def test_build_slots_text_hidden_name_not_revealed() -> None:

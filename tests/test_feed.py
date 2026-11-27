@@ -35,6 +35,7 @@ _CARD = feed.SlotCard(
     starts_at=datetime.datetime(2026, 12, 1, 15, 0, tzinfo=datetime.UTC),
     current_price=1250,
     regular_price=1500,
+    start_price=1250,
     hide_name=False,
     channel_msg_id=None,
     service_title="Мужская стрижка",
@@ -71,6 +72,22 @@ def test_build_post_text_regular_shows_business_name() -> None:
 
 def test_build_post_text_shows_current_and_struck_regular_price() -> None:
     assert "Цена сейчас: 1 250 ₽ (обычно <s>1 500 ₽</s>)" in _post()
+
+
+def test_build_post_text_start_equal_regular_has_no_struck_price() -> None:
+    card = dataclasses.replace(_CARD, start_price=1500)
+    assert "Цена сейчас: 1 250 ₽\n" in _post(card)
+
+
+def test_build_post_text_start_equal_regular_has_no_regular_price() -> None:
+    card = dataclasses.replace(_CARD, start_price=1500)
+    assert "обычно" not in _post(card)
+
+
+def test_build_list_item_text_start_equal_regular_has_no_struck_price(
+) -> None:
+    card = dataclasses.replace(_CARD, start_price=1500)
+    assert _list_item(card).endswith("Цена сейчас: 1 250 ₽")
 
 
 def test_build_post_text_date_with_weekday_in_city_time() -> None:
